@@ -122,3 +122,6 @@ tmp
 
 # custom
 mmrotate/.mim
+
+tools/wandb
+pretrained_weights

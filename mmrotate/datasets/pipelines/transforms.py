@@ -14,6 +14,10 @@ from mmrotate.core import norm_angle, obb2poly_np, poly2obb_np
 from ..builder import ROTATED_PIPELINES
 
 
+from mmcv.parallel import DataContainer as DC
+from mmdet.datasets.pipelines.formatting import to_tensor
+
+
 @ROTATED_PIPELINES.register_module()
 class RResize(Resize):
     """Resize images & rotated bbox Inherit Resize pipeline class to handle
@@ -560,3 +564,314 @@ class RMosaic(Mosaic):
                      (bbox_h > self.min_bbox_size)
         valid_inds = np.nonzero(valid_inds)[0]
         return bboxes[valid_inds], labels[valid_inds]
+
+
+
+@ROTATED_PIPELINES.register_module()
+class PolyRandomRotate_m(object):
+    """Rotate img & bbox.
+    Reference: https://github.com/hukaixuan19970627/OrientedRepPoints_DOTA
+
+    Args:
+        rotate_ratio (float, optional): The rotating probability.
+            Default: 0.5.
+        mode (str, optional) : Indicates whether the angle is chosen in a
+            random range (mode='range') or in a preset list of angles
+            (mode='value'). Defaults to 'range'.
+        angles_range(int|list[int], optional): The range of angles.
+            If mode='range', angle_ranges is an int and the angle is chosen
+            in (-angles_range, +angles_ranges).
+            If mode='value', angles_range is a non-empty list of int and the
+            angle is chosen in angles_range.
+            Defaults to 180 as default mode is 'range'.
+        auto_bound(bool, optional): whether to find the new width and height
+            bounds.
+        rect_classes (None|list, optional): Specifies classes that needs to
+            be rotated by a multiple of 90 degrees.
+        allow_negative (bool, optional): Whether to allow an image that does
+            not contain any bbox area. Default False.
+        version  (str, optional): Angle representations. Defaults to 'le90'.
+    """
+
+    def __init__(self,
+                 rotate_ratio=0.5,
+                 mode='range',
+                 angles_range=180,
+                 auto_bound=False,
+                 rect_classes=None,
+                 allow_negative=False,
+                 version='le90'):
+        self.rotate_ratio = rotate_ratio
+        self.auto_bound = auto_bound
+        assert mode in ['range', 'value'], \
+            f"mode is supposed to be 'range' or 'value', but got {mode}."
+        if mode == 'range':
+            assert isinstance(angles_range, int), \
+                "mode 'range' expects angle_range to be an int."
+        else:
+            assert mmcv.is_seq_of(angles_range, int) and len(angles_range), \
+                "mode 'value' expects angle_range as a non-empty list of int."
+        self.mode = mode
+        self.angles_range = angles_range
+        self.discrete_range = [90, 180, -90, -180]
+        self.rect_classes = rect_classes
+        self.allow_negative = allow_negative
+        self.version = version
+
+    @property
+    def is_rotate(self):
+        """Randomly decide whether to rotate."""
+        return np.random.rand() < self.rotate_ratio
+
+    def apply_image(self, img, bound_h, bound_w, interp=cv2.INTER_LINEAR):
+        """
+        img should be a numpy array, formatted as Height * Width * Nchannels
+        """
+        if len(img) == 0:
+            return img
+        return cv2.warpAffine(
+            img, self.rm_image, (bound_w, bound_h), flags=interp)
+
+    def apply_coords(self, coords):
+        """
+        coords should be a N * 2 array-like, containing N couples of (x, y)
+        points
+        """
+        if len(coords) == 0:
+            return coords
+        coords = np.asarray(coords, dtype=float)
+        return cv2.transform(coords[:, np.newaxis, :], self.rm_coords)[:, 0, :]
+
+    def create_rotation_matrix(self,
+                               center,
+                               angle,
+                               bound_h,
+                               bound_w,
+                               offset=0):
+        """Create rotation matrix."""
+        center += offset
+        rm = cv2.getRotationMatrix2D(tuple(center), angle, 1)
+        if self.auto_bound:
+            rot_im_center = cv2.transform(center[None, None, :] + offset,
+                                          rm)[0, 0, :]
+            new_center = np.array([bound_w / 2, bound_h / 2
+                                   ]) + offset - rot_im_center
+            rm[:, 2] += new_center
+        return rm
+
+    def filter_border(self, bboxes, h, w):
+        """Filter the box whose center point is outside or whose side length is
+        less than 5."""
+        x_ctr, y_ctr = bboxes[:, 0], bboxes[:, 1]
+        w_bbox, h_bbox = bboxes[:, 2], bboxes[:, 3]
+        keep_inds = (x_ctr > 0) & (x_ctr < w) & (y_ctr > 0) & (y_ctr < h) & \
+                    (w_bbox > 5) & (h_bbox > 5)
+        return keep_inds
+
+    def __call__(self, results):
+        """Call function of PolyRandomRotate."""
+        if not self.is_rotate:
+            results['rotate'] = False
+            angle = 0
+        else:
+            results['rotate'] = True
+            if self.mode == 'range':
+                angle = self.angles_range * (2 * np.random.rand() - 1)
+            else:
+                i = np.random.randint(len(self.angles_range))
+                angle = self.angles_range[i]
+
+            class_labels = results['gt_labels']
+            for classid in class_labels:
+                if self.rect_classes:
+                    if classid in self.rect_classes:
+                        np.random.shuffle(self.discrete_range)
+                        angle = self.discrete_range[0]
+                        break
+
+        h, w, c = results['img_shape']
+        img1 = results['img1']
+        img2 = results['img2']
+        results['rotate_angle'] = angle
+
+        image_center = np.array((w / 2, h / 2))
+        abs_cos, abs_sin = \
+            abs(np.cos(angle / 180 * np.pi)), abs(np.sin(angle / 180 * np.pi))
+        if self.auto_bound:
+            bound_w, bound_h = np.rint(
+                [h * abs_sin + w * abs_cos,
+                 h * abs_cos + w * abs_sin]).astype(int)
+        else:
+            bound_w, bound_h = w, h
+
+        self.rm_coords = self.create_rotation_matrix(image_center, angle,
+                                                     bound_h, bound_w)
+        self.rm_image = self.create_rotation_matrix(
+            image_center, angle, bound_h, bound_w, offset=-0.5)
+
+        img1 = self.apply_image(img1, bound_h, bound_w)
+        img2 = self.apply_image(img2, bound_h, bound_w)
+        results['img1'] = img1
+        results['img2'] = img2
+        results['img_shape'] = (bound_h, bound_w, c)
+        gt_bboxes = results.get('gt_bboxes', [])
+        labels = results.get('gt_labels', [])
+
+        if len(gt_bboxes):
+            gt_bboxes = np.concatenate(
+                [gt_bboxes, np.zeros((gt_bboxes.shape[0], 1))], axis=-1)
+            polys = obb2poly_np(gt_bboxes, self.version)[:, :-1].reshape(-1, 2)
+            polys = self.apply_coords(polys).reshape(-1, 8)
+            gt_bboxes = []
+            for pt in polys:
+                pt = np.array(pt, dtype=np.float32)
+                obb = poly2obb_np(pt, self.version) \
+                    if poly2obb_np(pt, self.version) is not None\
+                    else [0, 0, 0, 0, 0]
+                gt_bboxes.append(obb)
+            gt_bboxes = np.array(gt_bboxes, dtype=np.float32)
+            keep_inds = self.filter_border(gt_bboxes, bound_h, bound_w)
+            gt_bboxes = gt_bboxes[keep_inds, :]
+            labels = labels[keep_inds]
+        if len(gt_bboxes) == 0 and not self.allow_negative:
+            return None
+        results['gt_bboxes'] = gt_bboxes
+        results['gt_labels'] = labels
+
+        return results
+
+    def __repr__(self):
+        repr_str = self.__class__.__name__
+        repr_str += f'(rotate_ratio={self.rotate_ratio}, ' \
+                    f'base_angles={self.base_angles}, ' \
+                    f'angles_range={self.angles_range}, ' \
+                    f'auto_bound={self.auto_bound})'
+        return repr_str
+    
+
+
+@ROTATED_PIPELINES.register_module()
+class DefaultFormatBundle_m:
+    """Default formatting bundle.
+
+    It simplifies the pipeline of formatting common fields, including "img",
+    "proposals", "gt_bboxes", "gt_labels", "gt_masks" and "gt_semantic_seg".
+    These fields are formatted as follows.
+
+    - img: (1)transpose, (2)to tensor, (3)to DataContainer (stack=True)
+    - proposals: (1)to tensor, (2)to DataContainer
+    - gt_bboxes: (1)to tensor, (2)to DataContainer
+    - gt_bboxes_ignore: (1)to tensor, (2)to DataContainer
+    - gt_labels: (1)to tensor, (2)to DataContainer
+    - gt_masks: (1)to tensor, (2)to DataContainer (cpu_only=True)
+    - gt_semantic_seg: (1)unsqueeze dim-0 (2)to tensor, \
+                       (3)to DataContainer (stack=True)
+
+    Args:
+        img_to_float (bool): Whether to force the image to be converted to
+            float type. Default: True.
+        pad_val (dict): A dict for padding value in batch collating,
+            the default value is `dict(img=0, masks=0, seg=255)`.
+            Without this argument, the padding value of "gt_semantic_seg"
+            will be set to 0 by default, which should be 255.
+    """
+
+    def __init__(self,
+                 img_to_float=True,
+                 pad_val=dict(img=0, masks=0, seg=255)):
+        self.img_to_float = img_to_float
+        self.pad_val = pad_val
+
+    def __call__(self, results):
+        """Call function to transform and format common fields in results.
+
+        Args:
+            results (dict): Result dict contains the data to convert.
+
+        Returns:
+            dict: The result dict contains the data that is formatted with \
+                default bundle.
+        """
+
+        # if 'img' in results:
+        #     img = results['img']
+        #     if self.img_to_float is True and img.dtype == np.uint8:
+        #         # Normally, image is of uint8 type without normalization.
+        #         # At this time, it needs to be forced to be converted to
+        #         # flot32, otherwise the model training and inference
+        #         # will be wrong. Only used for YOLOX currently .
+        #         img = img.astype(np.float32)
+        #     # add default meta keys
+        #     results = self._add_default_meta_keys(results)
+        #     if len(img.shape) < 3:
+        #         img = np.expand_dims(img, -1)
+        #     img = np.ascontiguousarray(img.transpose(2, 0, 1))
+        #     results['img'] = DC(
+        #         to_tensor(img), padding_value=self.pad_val['img'], stack=True)
+        
+        imgs = []
+        for key in results.get('img_fields', ['img']):
+            results = self._add_default_meta_keys(results, key=key)
+            img = results[key]
+            if len(img.shape) < 3:
+                img = np.expand_dims(img, -1)
+            if self.img_to_float is True and img.dtype == np.uint8:
+                # Normally, image is of uint8 type without normalization.
+                # At this time, it needs to be forced to be converted to
+                # flot32, otherwise the model training and inference
+                # will be wrong. Only used for YOLOX currently .
+                img = img.astype(np.float32)
+            img = np.ascontiguousarray(img.transpose(2, 0, 1))
+            results[key] = DC(to_tensor(img), padding_value=self.pad_val['img'], stack=True)
+            imgs.append(results[key])
+        
+        if len(imgs) == 1:
+            results['img'] = results[key]
+        else:
+            results['img'] = imgs
+
+        for key in ['proposals', 'gt_bboxes', 'gt_bboxes_ignore', 'gt_labels']:
+            if key not in results:
+                continue
+            results[key] = DC(to_tensor(results[key]))
+        if 'gt_masks' in results:
+            results['gt_masks'] = DC(
+                results['gt_masks'],
+                padding_value=self.pad_val['masks'],
+                cpu_only=True)
+        if 'gt_semantic_seg' in results:
+            results['gt_semantic_seg'] = DC(
+                to_tensor(results['gt_semantic_seg'][None, ...]),
+                padding_value=self.pad_val['seg'],
+                stack=True)
+        results['pad_shape'] = (736, 864, 3)
+        return results
+
+    def _add_default_meta_keys(self, results, key='img'):
+        """Add default meta keys.
+
+        We set default meta keys including `pad_shape`, `scale_factor` and
+        `img_norm_cfg` to avoid the case where no `Resize`, `Normalize` and
+        `Pad` are implemented during the whole pipeline.
+
+        Args:
+            results (dict): Result dict contains the data to convert.
+
+        Returns:
+            results (dict): Updated result dict contains the data to convert.
+        """
+        img = results[key]
+        results.setdefault('pad_shape', img.shape)
+        results.setdefault('scale_factor', 1.0)
+        num_channels = 1 if len(img.shape) < 3 else img.shape[2]
+        results.setdefault(
+            'img_norm_cfg',
+            dict(
+                mean=np.zeros(num_channels, dtype=np.float32),
+                std=np.ones(num_channels, dtype=np.float32),
+                to_rgb=False))
+        return results
+
+    def __repr__(self):
+        return self.__class__.__name__ + \
+               f'(img_to_float={self.img_to_float})'

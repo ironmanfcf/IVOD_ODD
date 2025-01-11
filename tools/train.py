@@ -20,6 +20,9 @@ from mmrotate.datasets import build_dataset
 from mmrotate.models import build_detector
 from mmrotate.utils import collect_env, get_root_logger, setup_multi_processes
 
+import wandb
+wandb.init(project="DroneVehicle")
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a detector')

@@ -1,0 +1,5 @@
+[default]
+entity = fengcf1999
+project = DroneVehicle
+base_url = https://api.wandb.ai
+
