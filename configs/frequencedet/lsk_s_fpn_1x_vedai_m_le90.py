@@ -1,13 +1,22 @@
 _base_ = [
-    '../_base_/datasets/dronevehicle.py', '../_base_/schedules/schedule_1x.py',
+    '../_base_/datasets/vedai_m.py', '../_base_/schedules/schedule_1x.py',
     '../_base_/default_runtime.py'
 ]
+
+log_config = dict(
+    interval=50,
+    hooks=[
+        dict(type='TextLoggerHook'),
+        # dict(type='TensorboardLoggerHook')
+        dict(type='WandbLoggerHook', init_kwargs=dict(project="VEDAI", name="lsk_s_fpn_1x_vedai_m_le90"))
+    ])
+
 
 angle_version = 'le90'
 gpu_number = 1
 # fp16 = dict(loss_scale='dynamic')
 model = dict(
-    type='OrientedRCNN',
+    type='FrequenceDet',
     backbone=dict(
         type='LSKNet',
         embed_dims=[64, 128, 320, 512],
@@ -57,7 +66,7 @@ model = dict(
             in_channels=256,
             fc_out_channels=1024,
             roi_feat_size=7,
-            num_classes=5,
+            num_classes=9,
             bbox_coder=dict(
                 type='DeltaXYWHAOBBoxCoder',
                 angle_range=angle_version,
@@ -128,10 +137,25 @@ model = dict(
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 
+# train_pipeline = [
+#     dict(type='LoadImageFromFile'),
+#     dict(type='LoadAnnotations', with_bbox=True),
+#     dict(type='RResize', img_scale=(1024, 1024)),
+#     dict(
+#         type='RRandomFlip',
+#         flip_ratio=[0.25, 0.25, 0.25],
+#         direction=['horizontal', 'vertical', 'diagonal'],
+#         version=angle_version),
+#     dict(type='Normalize', **img_norm_cfg),
+#     dict(type='Pad', size_divisor=32),
+#     dict(type='DefaultFormatBundle'),
+#     dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels'])
+# ]
+
 train_pipeline = [
-    dict(type='LoadImageFromFile'),
+    dict(type='LoadTwoStreamImageFromFile', spectrals=('rgb', 'ir')),
     dict(type='LoadAnnotations', with_bbox=True),
-    dict(type='RResize', img_scale=(712, 840)),
+    dict(type='RResize', img_scale=(1024, 1024)),
     dict(
         type='RRandomFlip',
         flip_ratio=[0.25, 0.25, 0.25],
@@ -139,7 +163,7 @@ train_pipeline = [
         version=angle_version),
     dict(type='Normalize', **img_norm_cfg),
     dict(type='Pad', size_divisor=32),
-    dict(type='DefaultFormatBundle'),
+    dict(type='DefaultFormatBundle_m'),   #这个是用于img: (1)transpose, (2)to tensor, (3)to DataContainer (stack=True)
     dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels'])
 ]
 

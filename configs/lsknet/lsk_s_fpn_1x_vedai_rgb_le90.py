@@ -1,7 +1,16 @@
 _base_ = [
-    '../_base_/datasets/dronevehicle.py', '../_base_/schedules/schedule_1x.py',
+    '../_base_/datasets/vedai_rgb.py', '../_base_/schedules/schedule_1x.py',
     '../_base_/default_runtime.py'
 ]
+
+log_config = dict(
+    interval=50,
+    hooks=[
+        dict(type='TextLoggerHook'),
+        # dict(type='TensorboardLoggerHook')
+        dict(type='WandbLoggerHook', init_kwargs=dict(project="VEDAI", name="lsk_s_fpn_1x_vedai_rgb_le90"))
+    ])
+
 
 angle_version = 'le90'
 gpu_number = 1
@@ -57,7 +66,7 @@ model = dict(
             in_channels=256,
             fc_out_channels=1024,
             roi_feat_size=7,
-            num_classes=5,
+            num_classes=9,
             bbox_coder=dict(
                 type='DeltaXYWHAOBBoxCoder',
                 angle_range=angle_version,
@@ -131,7 +140,7 @@ img_norm_cfg = dict(
 train_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(type='LoadAnnotations', with_bbox=True),
-    dict(type='RResize', img_scale=(712, 840)),
+    dict(type='RResize', img_scale=(1024, 1024)),
     dict(
         type='RRandomFlip',
         flip_ratio=[0.25, 0.25, 0.25],

@@ -3,3 +3,4 @@ pytorch_wavelets
 PyWavelets
 cvxpy
 timm
+openxlab

@@ -120,6 +120,23 @@ class OverlapPatchEmbed(nn.Module):
 
 
     def forward(self, x):
+        
+        """_summary_
+            加入部分是为了解决问题  File "/root/miniconda3/envs/ivodobb/lib/python3.7/site-packages/torch/nn/functional.py", line 2058, in batch_norm
+            training, momentum, eps, torch.backends.cudnn.enabled
+        RuntimeError: cuDNN error: CUDNN_STATUS_EXECUTION_FAILED
+        """
+        # x = self.proj(x)
+        # _, _, H, W = x.shape
+        # # 1) 进入 BN 之前先转 float32
+        # if x.dtype == torch.float16:
+        #     x = x.float()
+        # x = self.norm(x)
+        # # 2) 如果后面还要继续用 fp16，再转回来
+        # if not torch.is_floating_point(x) or x.dtype != torch.float16:
+        #     x = x.half()
+        
+        
         x = self.proj(x)
         _, _, H, W = x.shape
         x = self.norm(x)        

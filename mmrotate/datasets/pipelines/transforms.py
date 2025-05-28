@@ -844,7 +844,7 @@ class DefaultFormatBundle_m:
                 to_tensor(results['gt_semantic_seg'][None, ...]),
                 padding_value=self.pad_val['seg'],
                 stack=True)
-        results['pad_shape'] = (736, 864, 3)
+        # results['pad_shape'] = (736, 864, 3)
         return results
 
     def _add_default_meta_keys(self, results, key='img'):

@@ -1,5 +1,5 @@
 _base_ = [
-    '../_base_/datasets/dronevehicle.py', '../_base_/schedules/schedule_1x.py',
+    '../_base_/datasets/dronevehicle_rgb.py', '../_base_/schedules/schedule_1x.py',
     '../_base_/default_runtime.py'
 ]
 

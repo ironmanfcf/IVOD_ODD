@@ -2,6 +2,7 @@
 import mmcv
 import numpy as np
 from mmdet.datasets.pipelines import LoadImageFromFile
+import os.path as osp
 
 from ..builder import ROTATED_PIPELINES
 
